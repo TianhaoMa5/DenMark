@@ -1,7 +1,21 @@
-# 🇩🇰 DenMark
+<h1 align="center">🇩🇰 DenMark: Robust Semantic-Level Watermarking for Diffusion Large Language Models</h1>
 
-Semantic watermarking for diffusion language models. Code for the method,
-baselines, attacks, and experiments evaluated in the paper.
+<p align="center">
+  Tianhao Ma, Weihao Xuan, Dong-Dong Wu, Farshid Nooshi,<br>
+  Takashi Ishida, Gang Niu, Naoto Yokoya, Masashi Sugiyama
+</p>
+
+<p align="center">
+  <a href="https://github.com/TianhaoMa5/DenMark/releases/latest">Encoder Checkpoint</a>
+  &nbsp;|&nbsp;
+  <a href="docs/PAPER_REPRODUCTION.md">Reproduction Guide</a>
+</p>
+
+## About
+
+Code for **DenMark: Robust Semantic-Level Watermarking for Diffusion Large
+Language Models**, including the method, baselines, attacks, and experiments
+evaluated in the paper.
 
 Supported backbones: **LLaDA-8B, LLaDA1.5-8B, LLaDA2.0-mini, and Dream**.
 
