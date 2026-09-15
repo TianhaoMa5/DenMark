@@ -101,6 +101,19 @@ python -m denmark.evaluation.audit_reproducibility
 
 Tests use synthetic inputs without downloading model weights or calling APIs.
 
+## Citation
+
+If you find this work useful, please cite our paper:
+
+```bibtex
+@article{ma2026denmark,
+  title={DenMark: Robust Semantic-Level Watermarking for Diffusion Large Language Models},
+  author={Ma, Tianhao and Xuan, Weihao and Wu, Dongdong and Nooshi, Farshid and Ishida, Takashi and Niu, Gang and Yokoya, Naoto and Sugiyama, Masashi},
+  journal={arXiv preprint arXiv:2609.14257},
+  year={2026}
+}
+```
+
 ## License
 
 [MIT](LICENSE). External models, datasets, and baseline implementations retain
