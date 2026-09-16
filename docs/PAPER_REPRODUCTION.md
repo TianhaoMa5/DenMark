@@ -39,7 +39,7 @@ Main robustness experiments cover the Cartesian product below.
 | Datasets | Finance-QA, AlpacaFarm, LongForm-QA |
 | Methods | DenMark, DLM-KGW, DGMark, PatternMark, UMR |
 | Main semantic attacks | sentence rewrite, sentence compression, sentence expansion, document rewrite |
-| Metrics | ROC-interpolated TPR@0.5/1/5% FPR and rank AUC |
+| Metrics | Empirical-threshold TPR@0.5/1/5% FPR and rank AUC |
 
 Every method/backbone/dataset starts from up to 300 generated positives. Apply
 `denmark/data/filter.py` before any attack. Never filter attacked text
@@ -294,7 +294,7 @@ negative log corrected p-value. Calibration and ROC negatives are disjoint.
 | DLM-KGW | `denmark/baselines/dlm_kgw/detect.py` | green-token z-score |
 | DGMark | `denmark/baselines/dgmark/detect.py` | mean squared z over all windows of size 8 |
 | PatternMark | `denmark/baselines/patternmark/detect.py` | negative official pattern-count p-value |
-| UMR | `denmark/baselines/umr/detect.py` | official z-score on first 300 retokenized tokens |
+| UMR | `denmark/baselines/umr/detect.py` | official z-score on full retokenized response |
 
 All attacked files must be re-tokenized. Use each backbone's held-out 10k pool
 and the `roc_*` or `paper_metrics` fields emitted by the evaluators.

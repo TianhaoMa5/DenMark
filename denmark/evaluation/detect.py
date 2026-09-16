@@ -17,7 +17,7 @@ sys.path.insert(0, str(THIS.parents[2]))
 
 from denmark.core.calibration import CalibratedDetectorSuite, RawSemanticDetector
 from denmark.core.scoring import clean_text
-from denmark.evaluation.metrics import roc_interpolated_tpr
+from denmark.evaluation.metrics import empirical_tpr
 from denmark.core.model import build_directions
 
 
@@ -77,11 +77,11 @@ def summarize(pos: list[float], neg: list[float]) -> dict:
         "tpr_at_1pct": tpr,
         "tpr_at_5pct": tpr5,
         "tpr_at_10pct": tpr10,
-        "roc_tpr_at_0_1pct": roc_interpolated_tpr(pos, neg, 0.001),
-        "roc_tpr_at_0_5pct": roc_interpolated_tpr(pos, neg, 0.005),
-        "roc_tpr_at_1pct": roc_interpolated_tpr(pos, neg, 0.01),
-        "roc_tpr_at_5pct": roc_interpolated_tpr(pos, neg, 0.05),
-        "roc_tpr_at_10pct": roc_interpolated_tpr(pos, neg, 0.10),
+        "roc_tpr_at_0_1pct": empirical_tpr(pos, neg, 0.001),
+        "roc_tpr_at_0_5pct": empirical_tpr(pos, neg, 0.005),
+        "roc_tpr_at_1pct": empirical_tpr(pos, neg, 0.01),
+        "roc_tpr_at_5pct": empirical_tpr(pos, neg, 0.05),
+        "roc_tpr_at_10pct": empirical_tpr(pos, neg, 0.10),
         "auc": auc_rank(pos, neg),
     }
 

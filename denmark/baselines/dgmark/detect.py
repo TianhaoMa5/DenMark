@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 import math
 import numpy as np
 from denmark.baselines.dgmark.model import _dgmark_window_scores, _score_dgmark_tokens
-from denmark.evaluation.metrics import roc_interpolated_tpr
+from denmark.evaluation.metrics import empirical_tpr
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -133,9 +133,9 @@ def summarize(positive: list[dict], negative: list[dict], score_field: str) -> d
         "tpr_at_1pct": float((pos_array > threshold1).mean()),
         "tpr_at_5pct": float((pos_array > threshold5).mean()),
         "tpr_at_10pct": float((pos_array > threshold10).mean()),
-        "roc_tpr_at_0_5pct": roc_interpolated_tpr(pos, neg, 0.005),
-        "roc_tpr_at_1pct": roc_interpolated_tpr(pos, neg, 0.01),
-        "roc_tpr_at_5pct": roc_interpolated_tpr(pos, neg, 0.05),
+        "roc_tpr_at_0_5pct": empirical_tpr(pos, neg, 0.005),
+        "roc_tpr_at_1pct": empirical_tpr(pos, neg, 0.01),
+        "roc_tpr_at_5pct": empirical_tpr(pos, neg, 0.05),
         "auc": auc_rank(pos, neg),
     }
 

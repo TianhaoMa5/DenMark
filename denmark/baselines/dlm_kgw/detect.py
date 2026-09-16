@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from denmark.baselines.dlm_kgw.model import HashDistribution
 import math
 import numpy as np
-from denmark.evaluation.metrics import roc_interpolated_tpr
+from denmark.evaluation.metrics import empirical_tpr
 
 
 def clean_text(text: str) -> str:
@@ -60,9 +60,9 @@ def summarize(pos: list[float], neg: list[float]) -> dict:
         "threshold_5pct": threshold_5pct,
         "tpr_at_1pct": float((pos_arr > threshold).mean()) if len(pos_arr) else float("nan"),
         "tpr_at_5pct": float((pos_arr > threshold_5pct).mean()) if len(pos_arr) else float("nan"),
-        "roc_tpr_at_0_5pct": roc_interpolated_tpr(pos, neg, 0.005),
-        "roc_tpr_at_1pct": roc_interpolated_tpr(pos, neg, 0.01),
-        "roc_tpr_at_5pct": roc_interpolated_tpr(pos, neg, 0.05),
+        "roc_tpr_at_0_5pct": empirical_tpr(pos, neg, 0.005),
+        "roc_tpr_at_1pct": empirical_tpr(pos, neg, 0.01),
+        "roc_tpr_at_5pct": empirical_tpr(pos, neg, 0.05),
         "auc": auc_rank(pos, neg) if len(pos_arr) and len(neg_arr) else float("nan"),
     }
 

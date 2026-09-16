@@ -33,8 +33,10 @@ to choose or evaluate a point on the final ROC curve.
 ## Detection metrics
 
 Use the detector ranking statistic recorded for each method. For DenMark this
-is `-log(p_scan)`. Report rank AUC with half credit for ties and linearly
-interpolated TPR at the requested exact false-positive rates.
+is `-log(p_scan)`. Report rank AUC with half credit for ties and the highest
+attainable TPR with empirical FPR no greater than the target. Do not interpolate
+or split tied scores. Legacy `roc_tpr_*` fields now use this paper protocol;
+previous result files must be recomputed, not relabeled.
 
 The main paper uses FPR targets 0.5%, 1%, and 5%. Some diagnostics also include
 0.1%; diagnostic columns must not silently replace the paper protocol.

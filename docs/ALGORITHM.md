@@ -79,8 +79,9 @@ This is per-size empirical calibration followed by a Bonferroni correction. It
 is not a max-z statistic calibrated once after scanning.
 
 Paper metrics use a second, disjoint clean pool to construct the empirical ROC.
-AUC is rank based, and TPR at a target FPR is obtained by linear interpolation
-on that ROC. The calibration pool is never used as the ROC-negative pool.
+AUC is rank based. TPR is the highest attainable value at an empirical FPR
+no greater than the target, without interpolation or splitting ties.
+The calibration pool is never used as the ROC-negative pool.
 
 ## Invariants
 

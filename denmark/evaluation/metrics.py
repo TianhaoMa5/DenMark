@@ -105,27 +105,50 @@ def roc_interpolated_tpr(
     return float(np.interp(target_fpr, unique_fpr, upper_tpr))
 
 
+def empirical_tpr(
+    positive: Iterable[float],
+    negative: Iterable[float],
+    target_fpr: float,
+) -> float:
+    """Highest attainable TPR with empirical FPR no greater than the target."""
+    pos = np.asarray(list(positive), dtype=np.float64)
+    neg = np.asarray(list(negative), dtype=np.float64)
+    if not pos.size or not neg.size:
+        raise ValueError("positive and negative score arrays must be non-empty")
+    if not np.isfinite(pos).all() or not np.isfinite(neg).all():
+        raise ValueError("scores must be finite")
+    if not 0.0 <= target_fpr <= 1.0:
+        raise ValueError("target_fpr must lie in [0, 1]")
+    if target_fpr == 1.0:
+        return 1.0
+    # Tied scores are indivisible under a deterministic threshold.
+    allowed = int(np.floor(target_fpr * neg.size))
+    threshold = np.sort(neg)[neg.size - allowed - 1]
+    return float((pos > threshold).mean())
+
+
 def summarize_roc(
     positive: Iterable[float],
     negative: Iterable[float],
     fprs: Sequence[float] = (0.005, 0.01, 0.05),
 ) -> dict[str, object]:
-    """Summarize rank AUC and interpolated TPRs."""
+    """Summarize rank AUC and deterministic empirical-threshold TPRs."""
     pos = list(positive)
     neg = list(negative)
     return {
         "n_positive": len(pos),
         "n_negative": len(neg),
-        "tpr": {str(fpr): roc_interpolated_tpr(pos, neg, fpr) for fpr in fprs},
+        "tpr": {str(fpr): empirical_tpr(pos, neg, fpr) for fpr in fprs},
+        "tpr_method": "empirical_threshold_no_interpolation",
         "auc": rank_auc(pos, neg),
     }
 
 
 __all__ = [
+    "empirical_tpr",
     "calibrated_scan_scores",
     "rank_auc",
     "roc_interpolated_tpr",
     "score_matrix",
     "summarize_roc",
 ]
-

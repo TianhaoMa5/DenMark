@@ -13,11 +13,39 @@ from denmark.core.calibration import (
     empirical_right_tail_p_loo,
 )
 from denmark.evaluation.metrics import (
+    empirical_tpr,
     calibrated_scan_scores,
     rank_auc,
     roc_interpolated_tpr,
     score_matrix,
 )
+
+
+def test_paper_tpr_does_not_interpolate_ties():
+    assert empirical_tpr([2, 2], [2, 1], 0.25) == 0.0
+    assert empirical_tpr([3, 2], [2, 1], 0.25) == 0.5
+    assert empirical_tpr([3, 2], [2, 1], 0.5) == 1.0
+    assert empirical_tpr([0], [1], 1.0) == 1.0
+
+
+def test_umr_scores_full_response_by_default(monkeypatch):
+    from denmark.baselines.umr import detect
+    monkeypatch.setattr('sys.argv', ['detect', '--umr_root', '.', '--bitmap_path',
+        'bitmap', '--tokenizer', 'test', '--vocab_size', '1000',
+        '--positive_jsonl', 'pos', '--negative_jsonl', 'neg', '--output_json', 'out'])
+    args = detect.parse_args()
+    assert args.max_token_len is None
+    seen = []
+    def score(ids, bitmap, **kwargs):
+        seen.append(len(ids))
+        return {'z_score': 1.0}
+    monkeypatch.setattr(detect, 'score_umr_tokens', score)
+    tokenizer = lambda *a, **kw: {'input_ids': list(range(450))}
+    detect.score_rows([{'text': 'expanded response'}], tokenizer, None, args, positive=True)
+    assert seen == [450]
+    args.max_token_len = 300
+    detect.score_rows([{'text': 'expanded response'}], tokenizer, None, args, positive=True)
+    assert seen == [450, 300]
 
 
 def test_score_matrix_uses_string_unit_size_keys():

@@ -39,7 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--positive_field", default="auto")
     parser.add_argument("--negative_field", default="auto")
     parser.add_argument("--min_token_len", type=int, default=150)
-    parser.add_argument("--max_token_len", type=int, default=300)
+    parser.add_argument("--max_token_len", type=int, default=None,
+                        help="Optional diagnostic cap; paper detection uses the full response.")
     parser.add_argument("--no_filter_positive", action="store_true")
     parser.add_argument("--no_filter_negative", action="store_true")
     parser.add_argument("--ratio", type=float, default=0.5)
@@ -82,7 +83,10 @@ def score_rows(source: list[dict], tokenizer, bitmap, args, *, positive: bool) -
         if not no_filter and len(token_ids) < args.min_token_len:
             stats["short"] += 1
             continue
-        token_ids = token_ids[: args.max_token_len]
+        if args.max_token_len is not None:
+            if args.max_token_len <= 0:
+                raise ValueError("max_token_len must be positive or omitted")
+            token_ids = token_ids[: args.max_token_len]
         result = score_umr_tokens(
             token_ids,
             bitmap,

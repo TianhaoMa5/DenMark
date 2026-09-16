@@ -31,7 +31,7 @@
     "calibration_negatives": 30000,
     "heldout_roc_negatives": 10000,
     "calibration_and_heldout_are_disjoint": true,
-    "tpr_interpolation": "linear_empirical_roc"
+    "tpr_interpolation": "none_empirical_threshold"
   },
   "filtering": {
     "minimum_tokens_before_attack": 150,

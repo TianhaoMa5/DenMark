@@ -44,7 +44,7 @@
   },
   "metrics": {
     "tpr_fprs": [0.005, 0.01, 0.05],
-    "tpr_method": "linear interpolation on empirical ROC",
+    "tpr_method": "empirical threshold at or below target FPR, without interpolation",
     "auc_method": "rank AUC with half credit for ties"
   },
   "methods": {
@@ -112,7 +112,7 @@
         "llada_longform_qa": 10,
         "dream_all": 10
       },
-      "score": "official z_score over first 300 retokenized tokens"
+      "score": "official z_score over full retokenized response"
     }
   },
   "semantic_attacks": {

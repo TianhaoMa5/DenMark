@@ -40,7 +40,7 @@ from denmark.core.model import encode_texts
 
 
 import math
-from denmark.evaluation.metrics import roc_interpolated_tpr
+from denmark.evaluation.metrics import empirical_tpr
 
 TEXT_FIELDS = (
     "attacked_text",
@@ -125,9 +125,9 @@ def summarize(positive: list[float], negative: list[float]) -> dict[str, Any]:
         result[label] = empirical_threshold(positive, negative, target)
     result.update(
         {
-            "roc_tpr_at_0_5pct": roc_interpolated_tpr(positive, negative, 0.005),
-            "roc_tpr_at_1pct": roc_interpolated_tpr(positive, negative, 0.01),
-            "roc_tpr_at_5pct": roc_interpolated_tpr(positive, negative, 0.05),
+            "roc_tpr_at_0_5pct": empirical_tpr(positive, negative, 0.005),
+            "roc_tpr_at_1pct": empirical_tpr(positive, negative, 0.01),
+            "roc_tpr_at_5pct": empirical_tpr(positive, negative, 0.05),
         }
     )
     return result
