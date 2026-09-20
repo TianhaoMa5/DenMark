@@ -51,21 +51,22 @@ over the 25 single-position updates.
 
 ## Detection
 
-The detector always tokenizes the evaluated text again with the matching
-generator tokenizer. For a candidate unit size `m'`, it partitions the first
-`gen_length` tokens into consecutive units and computes
+The detector always tokenizes the complete evaluated text again with the
+matching generator tokenizer. For a candidate unit size `m'`, it partitions
+the full retokenized response into consecutive units and computes
 
 ```text
 S_m'(y) = mean over non-empty units b and channels j of
           sign[b,j] * <E_eta(unit[b]), theta[b,j]>
 ```
 
-For every `m'` in `G = {12, ..., 37}`, a fixed clean calibration pool `D_cal`
-defines a right-tail empirical p-value:
+Let `b(y) = floor(|y| / 25)` be the response's token-length bin. For every `m'`
+in `G = {12, ..., 37}`, the corresponding 10,000-row clean calibration pool
+`D_cal,b(y)` defines a right-tail empirical p-value:
 
 ```text
-p_m'(y) = (1 + sum_{y0 in D_cal} 1[S_m'(y0) >= S_m'(y)])
-          / (|D_cal| + 1)
+p_m'(y) = (1 + sum_{y0 in D_cal,b(y)} 1[S_m'(y0) >= S_m'(y)])
+          / (|D_cal,b(y)| + 1)
 ```
 
 The scanned p-value and ranking score are
@@ -86,8 +87,11 @@ The calibration pool is never used as the ROC-negative pool.
 ## Invariants
 
 - Generation and detection must use the same encoder, tokenizer, channel count,
-  direction seed, message seed, and maximum scored length.
+  direction seed, and message seed. Detection must allocate enough deterministic
+  directions to cover the complete retokenized response.
 - Attacked text must be re-tokenized; pre-attack token IDs are invalid.
 - The scan range is fixed before evaluation.
-- Calibration and held-out ROC negatives must be disjoint.
+- Calibration and held-out ROC negatives must be source-disjoint.
+- A response must have a complete matching length-bin calibration pool; there
+  is no global or neighboring-bin fallback.
 - Empty final units are ignored, not converted to zero-score evidence.

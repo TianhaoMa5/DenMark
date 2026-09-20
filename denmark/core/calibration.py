@@ -63,7 +63,6 @@ class RawSemanticDetector:
         dirs: torch.Tensor,
         signs: torch.Tensor,
         device: str,
-        gen_length: int = 300,
         fixed_block_size: int = 25,
         scan_block_sizes: Iterable[int] = range(12, 38),
     ):
@@ -78,7 +77,6 @@ class RawSemanticDetector:
         self.dirs = dirs.detach().cpu()
         self.signs = signs.detach().cpu()
         self.device = device
-        self.gen_length = int(gen_length)
         self.fixed_block_size = int(fixed_block_size)
         self.scan_block_sizes = tuple(int(size) for size in scan_block_sizes)
         if not self.scan_block_sizes or any(size <= 0 for size in self.scan_block_sizes):
@@ -94,11 +92,11 @@ class RawSemanticDetector:
         token_ids: list[int] | None = None,
     ) -> list[int]:
         if token_ids is not None:
-            return [int(token_id) for token_id in token_ids[: self.gen_length]]
+            return [int(token_id) for token_id in token_ids]
         return self.llada_tok(
             clean_text(text or ""),
             add_special_tokens=False,
-        )["input_ids"][: self.gen_length]
+        )["input_ids"]
 
     def _score_segments(
         self,
@@ -109,7 +107,7 @@ class RawSemanticDetector:
         owners: list[int] = []
         for block_idx in range(self.num_blocks):
             start = block_idx * block_size
-            end = min(start + block_size, self.gen_length)
+            end = min(start + block_size, len(token_ids))
             if start >= len(token_ids):
                 break
             text = block_decode(token_ids, start, end, self.llada_tok)
@@ -199,14 +197,9 @@ class CalibratedDetectorSuite:
         self,
         raw_detector: RawSemanticDetector,
         negative_items: list[dict],
-        use_length_buckets: bool = False,
-        min_bucket_negatives: int = 30,
         detectors: Iterable[str] | None = None,
         calibration_items: list[dict] | None = None,
     ):
-        del min_bucket_negatives
-        if use_length_buckets:
-            raise ValueError("length-bucket calibration is not part of the paper detector")
         self.raw_detector = raw_detector
         self.negative_items = list(negative_items)
         self.calibration_items = (
@@ -300,14 +293,7 @@ class CalibratedDetectorSuite:
         self,
         item: dict,
         detector: str,
-        use_buckets: bool | None = None,
-        force_bucket: str | None = None,
     ) -> dict:
-        if use_buckets:
-            raise ValueError("length-bucket calibration is not part of the paper detector")
-        if force_bucket is not None:
-            raise ValueError("force_bucket is not part of the paper detector")
-
         if detector in {"fixed25_mean", "fixed_unit"}:
             raw = self._raw_score(item, "fixed_unit")
             pool = self.neg_raw["fixed_unit"]

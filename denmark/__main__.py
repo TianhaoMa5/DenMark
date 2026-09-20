@@ -56,6 +56,7 @@ COMMANDS = {
         "prompts": "denmark.data.prepare_waterbench",
         "filter": "denmark.data.filter",
         "negatives": "denmark.data.negatives",
+        "length-binned-calibration": "denmark.data.length_binned_calibration",
     },
     "encoder": {
         "prepare": "denmark.encoder.prepare",
@@ -64,6 +65,7 @@ COMMANDS = {
         "train": "denmark.encoder.train",
     },
     "evaluate": {
+        "score": "denmark.evaluation.score",
         "ppl": "denmark.evaluation.ppl",
         "ppl-delta": "denmark.evaluation.compare_ppl",
         "judge": "denmark.evaluation.judge",

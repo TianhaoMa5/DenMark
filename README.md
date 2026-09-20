@@ -88,8 +88,9 @@ The [experiment configuration](configs/paper_experiments.json) lists the setting
 
 Filter positives before attack; detect attacked text without length refiltering
 or reusing original token IDs. DenMark uses per-size empirical calibration and
-Bonferroni correction over unit sizes 12--37, with disjoint calibration and ROC
-negative pools. See the [evaluation protocol](docs/REPRODUCIBILITY.md).
+Bonferroni correction over unit sizes 12--37. Each full retokenized response is
+calibrated against its matching 25-token length bin; calibration and ROC-negative
+pools are source-disjoint. See the [evaluation protocol](docs/REPRODUCIBILITY.md).
 
 ## Checks
 

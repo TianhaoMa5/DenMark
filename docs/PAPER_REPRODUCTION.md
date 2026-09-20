@@ -89,9 +89,8 @@ pairs after dropping empty, unchanged, and duplicate pairs. Train with
 
 ## 3. Calibration and held-out negatives
 
-Create 40,000 tokenizer-matched C4 RealNewsLike crops for each backbone. The
-script samples target lengths approximately uniformly over 150--300 and writes
-disjoint 30,000/10,000 splits with an overlap audit:
+Create the 10,000 tokenizer-matched held-out C4 RealNewsLike crops for each
+backbone. Target lengths are approximately uniform over 150--300:
 
 ```bash
 python denmark/data/negatives.py \
@@ -101,14 +100,26 @@ python denmark/data/negatives.py \
 Outputs are:
 
 ```text
-runs/c4_negative_pools/<backbone>/calibration_30000.jsonl
 runs/c4_negative_pools/<backbone>/heldout_10000.jsonl
 runs/c4_negative_pools/audit.json
 ```
 
-Only DenMark uses the 30,000 calibration rows. All five methods use the same
-backbone-specific 10,000 rows for final ROC metrics. The two sets must have
-zero `source_id` overlap.
+Then build one 10,000-row calibration pool for every required 25-token bin.
+For example, bin 6 covers lengths 150--174:
+
+```bash
+python -m denmark data length-binned-calibration \
+  --base llada8b --tokenizer GSAI-ML/LLaDA-8B-Instruct \
+  --bin 6 \
+  --heldout-jsonl runs/c4_negative_pools/llada8b/heldout_10000.jsonl \
+  --output runs/c4_length_bins/llada8b/bin_006.jsonl
+```
+
+Repeat for every bin required by the clean and attacked outputs. DenMark uses
+only the calibration pool matching each response's full retokenized length.
+All methods use the same backbone-specific 10,000 held-out rows for final ROC
+metrics. Every calibration bin must have zero source-ID overlap with held-out
+negatives.
 
 ## 4. Generation and filtering
 
@@ -271,17 +282,19 @@ for LLaDA-8B and Dream.
 ### DenMark Method A
 
 ```bash
-python denmark/evaluation/detect.py \
-  --positive_jsonl runs/positive_or_attack.jsonl \
-  --calibration_jsonl runs/c4_negative_pools/<backbone>/calibration_30000.jsonl \
-  --negative_jsonl runs/c4_negative_pools/<backbone>/heldout_10000.jsonl \
-  --model "$MODEL" --encoder "$ENCODER" \
-  --num_message_bits 2 \
-  --detectors calibrated_scan --subsets pos_all_neg\>=150 \
-  --retokenize_positive --retokenize_calibration --retokenize_negative \
-  --scan_min 12 --scan_max 37 \
-  --output_json runs/detection.json --output_txt runs/detection.txt
+python -m denmark evaluate score \
+  --positive-jsonl runs/raw_scores/positive_or_attack.jsonl \
+  --calibration-dir runs/raw_scores/calibration_bins \
+  --negative-jsonl runs/raw_scores/heldout_10000.jsonl \
+  --scan-min 12 --scan-max 37 \
+  --token-length-field token_length \
+  --output-json runs/detection.json
 ```
+
+The three inputs contain full-text raw scan scores under
+`raw_scores_by_unit_size`. The scorer requires every referenced bin, verifies
+10,000 calibration rows per bin and zero calibration/held-out source overlap,
+then applies per-size empirical calibration and Bonferroni correction.
 
 The detector computes an empirical right-tail p-value independently at each
 unit size, takes the minimum, applies Bonferroni over sizes 12--37, and ranks by

@@ -35,9 +35,10 @@
   },
   "negative_protocol": {
     "source": "allenai/c4 realnewslike",
-    "samples_per_backbone": 40000,
-    "token_length_range": [150, 300],
-    "calibration_samples": 30000,
+    "heldout_samples_per_backbone": 10000,
+    "heldout_token_length_range": [150, 300],
+    "calibration_length_bin_width": 25,
+    "calibration_samples_per_required_bin": 10000,
     "heldout_roc_samples": 10000,
     "disjoint_by_source_id": true,
     "heldout_pool_shared_by_all_methods_for_backbone": true
@@ -51,7 +52,7 @@
     "denmark": {
       "config": "configs/denmark_paper.json",
       "generator": "denmark-generate",
-      "detector": "denmark/evaluation/detect.py"
+      "detector": "denmark/evaluation/score.py"
     },
     "dlm_kgw": {
       "generator": "denmark/baselines/dlm_kgw/generate.py",

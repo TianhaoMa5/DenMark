@@ -28,7 +28,10 @@
     "per_size_calibration": "empirical_right_tail",
     "multiple_testing_correction": "bonferroni",
     "ranking_score": "negative_log_corrected_p",
-    "calibration_negatives": 30000,
+    "length_bin_width": 25,
+    "calibration_negatives_per_length_bin": 10000,
+    "missing_length_bin_policy": "error",
+    "score_full_retokenized_response": true,
     "heldout_roc_negatives": 10000,
     "calibration_and_heldout_are_disjoint": true,
     "tpr_interpolation": "none_empirical_threshold"

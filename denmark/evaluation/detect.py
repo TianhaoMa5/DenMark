@@ -17,7 +17,7 @@ sys.path.insert(0, str(THIS.parents[2]))
 
 from denmark.core.calibration import CalibratedDetectorSuite, RawSemanticDetector
 from denmark.core.scoring import clean_text
-from denmark.evaluation.metrics import empirical_tpr
+from denmark.evaluation.metrics import empirical_tpr, length_bin_index
 from denmark.core.model import build_directions
 
 
@@ -102,9 +102,6 @@ def make_item(
     row: dict,
     idx: int,
     tokenizer,
-    gen_length: int,
-    *,
-    force_retokenize: bool = False,
 ) -> dict:
     attacked_text = row.get("attacked_text") or row.get("attack_text")
     text = clean_text(
@@ -118,19 +115,14 @@ def make_item(
         or row.get("output")
         or ""
     )
-    if attacked_text or force_retokenize:
-        full_token_ids = tokenizer(text, add_special_tokens=False)["input_ids"]
-        token_len = len(full_token_ids)
-    else:
-        full_token_ids = (
-            row.get("generated_token_ids")
-            or row.get("generation_token_ids")
-            or row.get("watermarked_token_ids")
-            or tokenizer(text, add_special_tokens=False)["input_ids"]
-        )
-        token_len = int(row.get("token_len") or row.get("generation_token_len") or len(full_token_ids))
-    token_ids = full_token_ids[:gen_length]
-    item = {"idx": idx, "text": text, "token_ids": token_ids, "token_len": token_len}
+    full_token_ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+    token_len = len(full_token_ids)
+    item = {
+        "idx": idx,
+        "text": text,
+        "token_ids": list(full_token_ids),
+        "token_len": token_len,
+    }
     if row.get("source_id") is not None:
         item["source_id"] = str(row["source_id"])
     for key in ("sample_nonce", "sample_id", "watermark_sample_id"):
@@ -148,18 +140,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--positive_jsonl", type=Path, required=True)
     parser.add_argument("--negative_jsonl", type=Path, required=True)
-    parser.add_argument(
-        "--calibration_jsonl",
-        type=Path,
-        help=(
-            "Independent calibration pool. If omitted, the negative pool is "
-            "reused with leave-one-out scoring for backward compatibility."
-        ),
-    )
+    parser.add_argument("--calibration_dir", type=Path, required=True)
+    parser.add_argument("--calibration_pattern", default="bin_{bin:03d}.jsonl")
+    parser.add_argument("--expected_calibration_per_bin", type=int, default=10_000)
     parser.add_argument("--negative_label", default="clean")
     parser.add_argument("--max_positive_rows", type=int, default=None)
     parser.add_argument("--max_negative_rows", type=int, default=None)
-    parser.add_argument("--max_calibration_rows", type=int, default=None)
     parser.add_argument(
         "--model",
         required=True,
@@ -170,7 +156,6 @@ def main() -> None:
         required=True,
         help="Hugging Face model identifier or local DenMark encoder checkpoint",
     )
-    parser.add_argument("--gen_length", type=int, default=300)
     parser.add_argument("--block_size", type=int, default=25)
     parser.add_argument("--num_message_bits", type=int, default=2)
     parser.add_argument("--direction_seed", type=int, default=42)
@@ -186,31 +171,94 @@ def main() -> None:
         default="all,pos_all_neg>=150,len>=150,pos>=150_neg_all",
         help="Comma-separated evaluation subsets. Use pos_all_neg>=150 for attacked positives without post-filtering.",
     )
-    parser.add_argument(
-        "--retokenize_positive",
-        action="store_true",
-        help="Ignore stored positive token IDs and tokenize the selected text field.",
-    )
-    parser.add_argument(
-        "--retokenize_negative",
-        action="store_true",
-        help="Ignore stored negative token IDs and tokenize the selected text field.",
-    )
-    parser.add_argument(
-        "--retokenize_calibration",
-        action="store_true",
-        help="Ignore stored calibration token IDs and tokenize the selected text field.",
-    )
     parser.add_argument("--output_json", type=Path, required=True)
     parser.add_argument("--output_txt", type=Path, required=True)
     args = parser.parse_args()
 
+    if args.scan_min <= 0 or args.scan_max < args.scan_min:
+        raise ValueError("invalid scan range")
+    if args.expected_calibration_per_bin <= 0:
+        raise ValueError("expected_calibration_per_bin must be positive")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    enc_tok = AutoTokenizer.from_pretrained(args.encoder)
-    enc = AutoModel.from_pretrained(args.encoder, torch_dtype=torch.float32).to(args.device).eval()
+    pos_rows = read_jsonl(args.positive_jsonl)
+    neg_rows = read_jsonl(args.negative_jsonl)
+    if args.max_positive_rows is not None:
+        pos_rows = pos_rows[: args.max_positive_rows]
+    if args.max_negative_rows is not None:
+        neg_rows = neg_rows[: args.max_negative_rows]
+    pos_all = [
+        make_item(row, idx, tokenizer)
+        for idx, row in enumerate(pos_rows)
+    ]
+    neg_all = [
+        make_item(row, idx, tokenizer)
+        for idx, row in enumerate(neg_rows)
+    ]
+    neg_id_values = [item.get("source_id") for item in neg_all]
+    if any(value is None for value in neg_id_values):
+        raise ValueError("every held-out negative row must contain source_id")
+    neg_ids = {str(value) for value in neg_id_values}
+    if len(neg_ids) != len(neg_all):
+        raise ValueError("held-out source_id values must be unique")
 
+    required_bins = sorted(
+        {length_bin_index(item["token_len"]) for item in (*pos_all, *neg_all)}
+    )
+    calibration_by_bin: dict[int, list[dict]] = {}
+    calibration_sources: dict[str, str] = {}
+    for bin_index in required_bins:
+        try:
+            relative = args.calibration_pattern.format(bin=bin_index)
+        except (IndexError, KeyError, ValueError) as exc:
+            raise ValueError("calibration_pattern must contain a valid {bin} field") from exc
+        path = args.calibration_dir / relative
+        rows = read_jsonl(path)
+        if len(rows) != args.expected_calibration_per_bin:
+            raise ValueError(
+                f"length bin {bin_index}: expected {args.expected_calibration_per_bin} "
+                f"calibration rows, found {len(rows)}"
+            )
+        items = [
+            make_item(row, idx, tokenizer)
+            for idx, row in enumerate(rows)
+        ]
+        wrong_bin = [
+            item for item in items if length_bin_index(item["token_len"]) != bin_index
+        ]
+        if wrong_bin:
+            raise ValueError(
+                f"calibration bin {bin_index} contains {len(wrong_bin)} rows "
+                "with mismatched token lengths"
+            )
+        cal_id_values = [item.get("source_id") for item in items]
+        if any(value is None for value in cal_id_values):
+            raise ValueError(f"calibration bin {bin_index} has missing source_id values")
+        cal_ids = {str(value) for value in cal_id_values}
+        if len(cal_ids) != len(items):
+            raise ValueError(f"calibration bin {bin_index} has duplicate source IDs")
+        overlap = cal_ids & neg_ids
+        if overlap:
+            raise ValueError(
+                f"calibration bin {bin_index} and held-out negatives overlap on "
+                f"{len(overlap)} source IDs"
+            )
+        calibration_by_bin[bin_index] = items
+        calibration_sources[str(bin_index)] = str(path)
+
+    max_scored_length = max(
+        item["token_len"]
+        for item in (
+            *pos_all,
+            *neg_all,
+            *(item for rows in calibration_by_bin.values() for item in rows),
+        )
+    )
+    enc_tok = AutoTokenizer.from_pretrained(args.encoder)
+    enc = AutoModel.from_pretrained(
+        args.encoder, torch_dtype=torch.float32
+    ).to(args.device).eval()
     dirs, signs = build_directions(
-        math.ceil(args.gen_length / args.block_size),
+        math.ceil(max_scored_length / args.scan_min),
         args.num_message_bits,
         args.direction_seed,
         args.message_seed,
@@ -223,89 +271,29 @@ def main() -> None:
         dirs,
         signs,
         args.device,
-        gen_length=args.gen_length,
         fixed_block_size=args.block_size,
         scan_block_sizes=range(args.scan_min, args.scan_max + 1),
     )
-
-    pos_rows = read_jsonl(args.positive_jsonl)
-    neg_rows = read_jsonl(args.negative_jsonl)
-    cal_rows = read_jsonl(args.calibration_jsonl) if args.calibration_jsonl else None
-    if args.max_positive_rows is not None:
-        pos_rows = pos_rows[: args.max_positive_rows]
-    if args.max_negative_rows is not None:
-        neg_rows = neg_rows[: args.max_negative_rows]
-    if cal_rows is None:
-        cal_rows = neg_rows
-    elif args.max_calibration_rows is not None:
-        cal_rows = cal_rows[: args.max_calibration_rows]
-    pos_all = [
-        make_item(
-            row,
-            idx,
-            tokenizer,
-            args.gen_length,
-            force_retokenize=args.retokenize_positive,
-        )
-        for idx, row in enumerate(pos_rows)
-    ]
-    neg_all = [
-        make_item(
-            row,
-            idx,
-            tokenizer,
-            args.gen_length,
-            force_retokenize=args.retokenize_negative,
-        )
-        for idx, row in enumerate(neg_rows)
-    ]
-    cal_all = [
-        make_item(
-            row,
-            idx,
-            tokenizer,
-            args.gen_length,
-            force_retokenize=args.retokenize_calibration,
-        )
-        for idx, row in enumerate(cal_rows)
-    ]
-    calibration_is_disjoint = args.calibration_jsonl is not None
-    calibration_negative_overlap = None
-    if calibration_is_disjoint:
-        cal_id_values = [item.get("source_id") for item in cal_all]
-        neg_id_values = [item.get("source_id") for item in neg_all]
-        if any(value is None for value in (*cal_id_values, *neg_id_values)):
-            raise ValueError(
-                "disjoint calibration requires source_id on every calibration "
-                "and held-out negative row"
-            )
-        cal_ids = {str(value) for value in cal_id_values}
-        neg_ids = {str(value) for value in neg_id_values}
-        if len(cal_ids) != len(cal_all) or len(neg_ids) != len(neg_all):
-            raise ValueError("calibration and held-out source_id values must be unique")
-        calibration_negative_overlap = len(cal_ids & neg_ids)
-        if calibration_negative_overlap:
-            raise ValueError(
-                "calibration and held-out negative pools overlap on "
-                f"{calibration_negative_overlap} source IDs"
-            )
 
     detectors = [x.strip() for x in args.detectors.split(",") if x.strip()]
     result = {
         "mode": "active_blocks_only",
         "note": "Scores average valid units; calibrated_scan uses per-size empirical p-values and Bonferroni correction.",
         "negative_source": str(args.negative_jsonl),
-        "calibration_source": str(args.calibration_jsonl or args.negative_jsonl),
-        "calibration_mode": (
-            "disjoint_fixed_pool" if calibration_is_disjoint else "shared_pool_leave_one_out"
-        ),
-        "calibration_negative_source_id_overlap": calibration_negative_overlap,
+        "calibration_source_by_length_bin": calibration_sources,
+        "calibration_mode": "disjoint_25_token_length_bins",
+        "calibration_count_per_bin": args.expected_calibration_per_bin,
+        "required_length_bins": required_bins,
+        "calibration_negative_source_id_overlap": 0,
         "negative_label": args.negative_label,
         "positive_source": str(args.positive_jsonl),
-        "positive_retokenized": args.retokenize_positive,
-        "negative_retokenized": args.retokenize_negative,
-        "calibration_retokenized": args.retokenize_calibration,
-        "calibration_len_stats": len_stats([x["token_len"] for x in cal_all]),
+        "positive_retokenized": True,
+        "negative_retokenized": True,
+        "calibration_retokenized": True,
+        "calibration_len_stats_by_bin": {
+            str(bin_index): len_stats([x["token_len"] for x in items])
+            for bin_index, items in calibration_by_bin.items()
+        },
         "negative_len_stats": len_stats([x["token_len"] for x in neg_all]),
         "positive_len_stats": len_stats([x["token_len"] for x in pos_all]),
         "detectors": detectors,
@@ -334,23 +322,34 @@ def main() -> None:
     for subset_name, pos_filter, neg_filter in subsets:
         pos = [x for x in pos_all if pos_filter(x)]
         neg = [x for x in neg_all if neg_filter(x)]
-        calibration = [x for x in cal_all if neg_filter(x)]
-        suite = CalibratedDetectorSuite(
-            raw_detector,
-            neg,
-            use_length_buckets=False,
-            detectors=detectors,
-            calibration_items=(calibration if calibration_is_disjoint else None),
+        subset_bins = sorted(
+            {length_bin_index(item["token_len"]) for item in (*pos, *neg)}
         )
+        suites = {
+            bin_index: CalibratedDetectorSuite(
+                raw_detector,
+                [item for item in neg if length_bin_index(item["token_len"]) == bin_index],
+                detectors=detectors,
+                calibration_items=calibration_by_bin[bin_index],
+            )
+            for bin_index in subset_bins
+        }
         subset_result = {
             "n_pos": len(pos),
             "n_neg": len(neg),
-            "n_calibration": len(calibration),
+            "calibration_bins": subset_bins,
+            "n_calibration_per_bin": args.expected_calibration_per_bin,
             "calibrated": {},
         }
         for det in detectors:
-            neg_scores = [suite.score_item(item, det)["score"] for item in neg]
-            pos_scores = [suite.score_item(item, det)["score"] for item in pos]
+            neg_scores = [
+                suites[length_bin_index(item["token_len"])].score_item(item, det)["score"]
+                for item in neg
+            ]
+            pos_scores = [
+                suites[length_bin_index(item["token_len"])].score_item(item, det)["score"]
+                for item in pos
+            ]
             summary = summarize(pos_scores, neg_scores)
             if args.save_scores:
                 summary["positive_scores"] = pos_scores

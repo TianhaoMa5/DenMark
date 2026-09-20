@@ -15,6 +15,9 @@ from denmark.core.calibration import (
 from denmark.evaluation.metrics import (
     empirical_tpr,
     calibrated_scan_scores,
+    calibrated_scan_scores_by_length_bin,
+    length_bin_bounds,
+    length_bin_index,
     rank_auc,
     roc_interpolated_tpr,
     score_matrix,
@@ -48,6 +51,19 @@ def test_umr_scores_full_response_by_default(monkeypatch):
     assert seen == [450, 300]
 
 
+def test_denmark_detector_retokenizes_and_keeps_full_response():
+    from denmark.evaluation.detect import make_item
+
+    tokenizer = lambda *args, **kwargs: {"input_ids": list(range(450))}
+    item = make_item(
+        {"text": "expanded response", "watermarked_token_ids": [1, 2, 3]},
+        0,
+        tokenizer,
+    )
+    assert item["token_len"] == 450
+    assert len(item["token_ids"]) == 450
+
+
 def test_score_matrix_uses_string_unit_size_keys():
     records = [
         {"raw_scores_by_unit_size": {"12": 1.0, "13": 2.0}},
@@ -64,6 +80,36 @@ def test_calibrated_scan_is_per_size_then_bonferroni():
     assert scores[0] == pytest.approx(-np.log(0.5))
     # Row 2 is no stronger than any calibration sample and clips to p=1.
     assert scores[2] == pytest.approx(0.0)
+
+
+def test_length_bin_boundaries_are_25_tokens_wide():
+    assert length_bin_index(150) == 6
+    assert length_bin_index(174) == 6
+    assert length_bin_index(175) == 7
+    assert length_bin_index(324) == 12
+    assert length_bin_index(325) == 13
+    assert length_bin_bounds(6) == (150, 174)
+    assert length_bin_bounds(13) == (325, 349)
+
+
+def test_length_binned_calibration_routes_without_global_fallback():
+    evaluation = np.asarray([[5.0, 5.0], [5.0, 5.0]])
+    calibration = {
+        6: np.zeros((4, 2)),
+        13: np.full((4, 2), 10.0),
+    }
+    scores = calibrated_scan_scores_by_length_bin(
+        evaluation,
+        [150, 325],
+        calibration,
+    )
+    assert scores[0] > scores[1]
+    with pytest.raises(KeyError, match="length bin 7"):
+        calibrated_scan_scores_by_length_bin(
+            np.asarray([[1.0]]),
+            [175],
+            {6: np.zeros((4, 1))},
+        )
 
 
 def test_rank_auc_gives_half_credit_to_ties():

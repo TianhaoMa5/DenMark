@@ -7,6 +7,34 @@ from collections.abc import Iterable, Mapping, Sequence
 import numpy as np
 
 
+DEFAULT_LENGTH_BIN_WIDTH = 25
+
+
+def length_bin_index(
+    token_length: int,
+    bin_width: int = DEFAULT_LENGTH_BIN_WIDTH,
+) -> int:
+    """Return the fixed-width calibration bin for a positive token length."""
+    if bin_width <= 0:
+        raise ValueError("bin_width must be positive")
+    if token_length < 1:
+        raise ValueError("token_length must be positive")
+    return int(token_length) // int(bin_width)
+
+
+def length_bin_bounds(
+    bin_index: int,
+    bin_width: int = DEFAULT_LENGTH_BIN_WIDTH,
+) -> tuple[int, int]:
+    """Return inclusive token-length bounds for one calibration bin."""
+    if bin_width <= 0:
+        raise ValueError("bin_width must be positive")
+    if bin_index < 0:
+        raise ValueError("bin_index must be non-negative")
+    lower = max(1, int(bin_index) * int(bin_width))
+    return lower, int(bin_index) * int(bin_width) + int(bin_width) - 1
+
+
 def score_matrix(
     records: Sequence[Mapping[str, object]],
     unit_sizes: Sequence[int],
@@ -65,6 +93,44 @@ def calibrated_scan_scores(
         p_values[:, column] = (1.0 + count_ge) / (n_calibration + 1.0)
     corrected = np.minimum(1.0, calibration.shape[1] * np.min(p_values, axis=1))
     return -np.log(corrected)
+
+
+def calibrated_scan_scores_by_length_bin(
+    evaluation: np.ndarray,
+    token_lengths: Sequence[int] | np.ndarray,
+    calibration_by_bin: Mapping[int, np.ndarray],
+    bin_width: int = DEFAULT_LENGTH_BIN_WIDTH,
+) -> np.ndarray:
+    """Calibrate each row only against its matching token-length bin.
+
+    Missing bins are errors. Falling back to a global or neighboring null pool
+    would silently change the paper protocol.
+    """
+    evaluation = np.asarray(evaluation, dtype=np.float64)
+    lengths = np.asarray(token_lengths, dtype=np.int64)
+    if evaluation.ndim != 2:
+        raise ValueError("evaluation scores must be two-dimensional")
+    if lengths.ndim != 1 or lengths.shape[0] != evaluation.shape[0]:
+        raise ValueError("token_lengths must contain one value per evaluation row")
+    if np.any(lengths < 1):
+        raise ValueError("token_lengths must be positive")
+    if not np.isfinite(evaluation).all():
+        raise ValueError("evaluation scores must contain only finite values")
+
+    bins = np.asarray(
+        [length_bin_index(int(length), bin_width) for length in lengths],
+        dtype=np.int64,
+    )
+    scores = np.empty(evaluation.shape[0], dtype=np.float64)
+    for bin_index in np.unique(bins):
+        if int(bin_index) not in calibration_by_bin:
+            raise KeyError(f"missing calibration pool for length bin {int(bin_index)}")
+        rows = np.flatnonzero(bins == bin_index)
+        scores[rows] = calibrated_scan_scores(
+            evaluation[rows],
+            np.asarray(calibration_by_bin[int(bin_index)], dtype=np.float64),
+        )
+    return scores
 
 
 def rank_auc(positive: Iterable[float], negative: Iterable[float]) -> float:
@@ -145,8 +211,12 @@ def summarize_roc(
 
 
 __all__ = [
+    "DEFAULT_LENGTH_BIN_WIDTH",
     "empirical_tpr",
     "calibrated_scan_scores",
+    "calibrated_scan_scores_by_length_bin",
+    "length_bin_bounds",
+    "length_bin_index",
     "rank_auc",
     "roc_interpolated_tpr",
     "score_matrix",

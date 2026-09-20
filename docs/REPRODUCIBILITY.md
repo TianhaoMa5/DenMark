@@ -18,17 +18,21 @@ attacked output merely because the attack changes its token length.
 
 ## Calibration and ROC negatives
 
-For each backbone, prepare 40,000 unique C4 RealNewsLike passages using that
-backbone's tokenizer. Token lengths should be approximately uniform over the
-integer range 150 through 300.
+For each backbone, first prepare 10,000 unique C4 RealNewsLike passages using
+that backbone's tokenizer. Their lengths are approximately uniform over the
+integer range 150 through 300, and they form the held-out empirical
+ROC-negative pool. Separately build 10,000 calibration crops for every required
+25-token length bin. Bin `b` contains lengths `25b` through `25b+24`.
 
-- 30,000 passages form DenMark's calibration pool.
-- 10,000 disjoint passages form the held-out empirical ROC-negative pool.
+- DenMark calibrates each response only against the 10,000 rows in its matching
+  length bin; missing bins are errors and never fall back to a global pool.
 - The 10,000 held-out negatives are shared by all methods for that backbone.
-- Calibration and held-out source IDs must have zero overlap.
+- Every calibration bin and the held-out pool must have zero source-ID overlap.
 
-The calibration pool defines the per-size empirical p-values. It is never used
-to choose or evaluate a point on the final ROC curve.
+The matching length-bin calibration pool defines the per-size empirical
+p-values. It is never used to choose or evaluate a point on the final ROC
+curve. Detection retokenizes and scores the complete post-attack response;
+attacked outputs are neither length-filtered again nor truncated to 300 tokens.
 
 ## Detection metrics
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build the paper's tokenizer-matched C4 calibration and ROC pools.
+"""Build the paper's tokenizer-matched held-out C4 ROC pools.
 
-For every requested backbone tokenizer this script creates 40,000 unique C4
-RealNewsLike crops by default. Token lengths are sampled uniformly from
-150--300, then the rows are split deterministically into 30,000 calibration
-examples and 10,000 disjoint held-out ROC negatives.
+For every requested backbone tokenizer this script creates 10,000 unique C4
+RealNewsLike crops by default, with token lengths sampled uniformly from
+150--300. Length-binned DenMark calibration pools are built separately with
+``denmark.data.length_binned_calibration`` so held-out source documents can be
+excluded in full.
 """
 
 from __future__ import annotations
@@ -51,8 +52,6 @@ def parse_tokenizer_spec(value: str) -> TokenizerSpec:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--samples-per-tokenizer", type=int, default=40_000)
-    parser.add_argument("--calibration-size", type=int, default=30_000)
     parser.add_argument("--heldout-size", type=int, default=10_000)
     parser.add_argument("--min-tokens", type=int, default=150)
     parser.add_argument("--max-tokens", type=int, default=300)
@@ -114,10 +113,8 @@ def write_jsonl(path: Path, records: list[dict[str, Any]], overwrite: bool) -> N
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if args.samples_per_tokenizer != args.calibration_size + args.heldout_size:
-        raise ValueError(
-            "samples-per-tokenizer must equal calibration-size + heldout-size"
-        )
+    if args.heldout_size <= 0:
+        raise ValueError("heldout-size must be positive")
     if not 0 < args.min_tokens <= args.max_tokens:
         raise ValueError("require 0 < min-tokens <= max-tokens")
     labels = [spec.label for spec in args.tokenizers]
@@ -183,7 +180,7 @@ def main() -> None:
         source_documents_seen += 1
         source_text = str(row.get("text") or "")
         for label, tokenizer in tokenizers.items():
-            if len(accepted[label]) >= args.samples_per_tokenizer:
+            if len(accepted[label]) >= args.heldout_size:
                 continue
             ids = token_ids(tokenizer, source_text)
             rng = rngs[label]
@@ -216,20 +213,20 @@ def main() -> None:
                 " ".join(f"{label}={len(rows)}" for label, rows in accepted.items()),
                 flush=True,
             )
-        if all(len(rows) == args.samples_per_tokenizer for rows in accepted.values()):
+        if all(len(rows) == args.heldout_size for rows in accepted.values()):
             break
 
     incomplete = {
         label: len(rows)
         for label, rows in accepted.items()
-        if len(rows) != args.samples_per_tokenizer
+        if len(rows) != args.heldout_size
     }
     if incomplete:
         raise RuntimeError(f"C4 stream ended before quotas were met: {incomplete}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     global_summary: dict[str, Any] = {
-        "protocol": "paper_c4_tokenizer_matched_disjoint_calibration_and_roc",
+        "protocol": "paper_c4_tokenizer_matched_heldout_roc",
         "dataset": DATASET_NAME,
         "dataset_config": DATASET_CONFIG,
         "dataset_revision": args.dataset_revision,
@@ -237,24 +234,14 @@ def main() -> None:
         "tokenizers": {},
     }
     for label, rows in accepted.items():
-        calibration = rows[: args.calibration_size]
-        heldout = rows[args.calibration_size :]
-        cal_ids = {row["source_id"] for row in calibration}
-        heldout_ids = {row["source_id"] for row in heldout}
-        overlap = cal_ids & heldout_ids
-        if overlap:
-            raise RuntimeError(f"{label}: calibration/heldout overlap={len(overlap)}")
         base_dir = args.output_dir / label
-        write_jsonl(base_dir / "calibration_30000.jsonl", calibration, args.overwrite)
-        write_jsonl(base_dir / "heldout_10000.jsonl", heldout, args.overwrite)
+        write_jsonl(base_dir / "heldout_10000.jsonl", rows, args.overwrite)
         lengths = [int(row["token_length"]) for row in rows]
         global_summary["tokenizers"][label] = {
             "model": specs[label].model,
             "revision": specs[label].revision,
             "total": len(rows),
-            "calibration": len(calibration),
-            "heldout": len(heldout),
-            "source_id_overlap": len(overlap),
+            "heldout": len(rows),
             "token_length_min": min(lengths),
             "token_length_max": max(lengths),
             "token_length_histogram": dict(sorted(Counter(lengths).items())),
