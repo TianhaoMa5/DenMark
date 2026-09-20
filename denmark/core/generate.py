@@ -282,9 +282,7 @@ def _do_inner_step(x, block_id, _inner, llada, t_eta, t_eta_tok, llada_tok,
                    shared_rollout_seeds=False,
                    candidate_region_size=None,
                    score_without_rollout=False,
-                   generator_family="llada",
-                   rollout_batch_size=0,
-                   encoder_batch_size=0):
+                   generator_family="llada"):
     b_s = L_p + block_id * block_size
     b_e = min(b_s + block_size, L_p + gen_length)
     cand_s, cand_e = candidate_region_bounds(
@@ -390,21 +388,13 @@ def _do_inner_step(x, block_id, _inner, llada, t_eta, t_eta_tok, llada_tok,
         completed_rows[:, b_s:b_e] = torch.where(is_mask, sampled, block_view)
         completed = completed_rows.detach().cpu()
     else:
-        rollout_rows = int(cands_to_score.shape[0])
-        rollout_microbatch_size = min(
-            rollout_rows,
-            int(rollout_batch_size) if int(rollout_batch_size) > 0 else rollout_rows,
-        )
-        rollout_batch_stats = {}
         completed = complete_block_one_shot(
             cands_to_score.to(device), llada, mask_id, rollout_temp,
-            L_p, block_id, block_size, gen_length,
-            batch_sz=rollout_microbatch_size,
+            L_p, block_id, block_size, gen_length, batch_sz=16,
             n_iter=rollout_n_iter,
             shared_noise_group_size=R if shared_rollout_seeds else 0,
             shared_noise_seed=rollout_noise_seed,
             generator_family=generator_family,
-            batch_stats=rollout_batch_stats,
         )
 
     block_token_rows = completed[:, b_s:b_e].tolist()
@@ -422,20 +412,7 @@ def _do_inner_step(x, block_id, _inner, llada, t_eta, t_eta_tok, llada_tok,
         for txt in safe_batch_decode(llada_tok, block_token_rows, skip_special_tokens=True)
     ]
 
-    encoder_microbatch_size = min(
-        len(block_texts),
-        int(encoder_batch_size) if int(encoder_batch_size) > 0 else len(block_texts),
-    )
-    encoder_batch_stats = {}
-    embs_all = encode_texts(
-        block_texts,
-        t_eta,
-        t_eta_tok,
-        device,
-        batch_sz=encoder_microbatch_size,
-        to_cpu=False,
-        batch_stats=encoder_batch_stats,
-    )
+    embs_all = encode_texts(block_texts, t_eta, t_eta_tok, device, to_cpu=False)
     if score_R > 1:
         embs_unique = embs_all.view(n_rollout_cands, score_R, -1).mean(dim=1)
     else:
@@ -479,22 +456,7 @@ def _do_inner_step(x, block_id, _inner, llada, t_eta, t_eta_tok, llada_tok,
         "dedup_candidates": bool(dedup_candidates),
         "candidate_unique_count": int(n_rollout_cands),
         "candidate_duplicate_count": int(duplicate_count),
-        "rollout_batch_size_configured": int(rollout_batch_size),
-        "rollout_batch_size": int(
-            n_rollout_cands * score_R
-            if score_without_rollout
-            else rollout_batch_stats["max_successful_batch_size"]
-        ),
-        "rollout_forward_batches": int(
-            0 if score_without_rollout else rollout_batch_stats["forward_batches"]
-        ),
-        "rollout_oom_retries": int(
-            0 if score_without_rollout else rollout_batch_stats["oom_retries"]
-        ),
-        "encoder_batch_size_configured": int(encoder_batch_size),
-        "encoder_batch_size": int(encoder_batch_stats["max_successful_batch_size"]),
-        "encoder_forward_batches": int(encoder_batch_stats["forward_batches"]),
-        "encoder_oom_retries": int(encoder_batch_stats["oom_retries"]),
+        "rollout_batch_size": int(n_rollout_cands * score_R),
         "score_without_rollout": bool(score_without_rollout),
         "rollout_source": "current_logits_no_extra_forward" if score_without_rollout else "candidate_conditioned_forward",
         "position_selection": position_selection,
@@ -535,8 +497,6 @@ def generate_one(
     candidate_region_size=None,
     score_without_rollout=False,
     argmax_logprob_top_frac=1.0,
-    rollout_batch_size=0,
-    encoder_batch_size=0,
 ):
     if argmax_logprob_top_frac <= 0.0 or argmax_logprob_top_frac > 1.0:
         raise ValueError("argmax_logprob_top_frac must be in (0, 1]")
@@ -591,8 +551,6 @@ def generate_one(
             candidate_region_size=candidate_region_size,
             score_without_rollout=score_without_rollout,
             generator_family=generator_family,
-            rollout_batch_size=rollout_batch_size,
-            encoder_batch_size=encoder_batch_size,
         ), effective_rollouts
 
     if decode_schedule == "sequential":
@@ -723,24 +681,6 @@ def parse_args():
                    choices=["none", "constant", "linear_decay"],
                    help="Per-step rollout schedule; linear_decay treats R as the per-block average.")
     p.add_argument("--rollout_n_iter", type=int, default=1)
-    p.add_argument(
-        "--rollout_batch_size",
-        type=int,
-        default=0,
-        help=(
-            "Maximum candidate-rollout rows per generator forward; 0 starts with the full "
-            "K x R batch. CUDA OOM automatically halves the batch and retries."
-        ),
-    )
-    p.add_argument(
-        "--encoder_batch_size",
-        type=int,
-        default=0,
-        help=(
-            "Maximum rollout texts per semantic-encoder forward; 0 starts with the full "
-            "rollout batch. CUDA OOM automatically halves the batch and retries."
-        ),
-    )
     p.add_argument("--num_message_bits", type=int, default=2, help="B")
     p.add_argument("--channels_per_step", type=int, default=2, help="C")
     p.add_argument("--temperature", type=float, default=0.5, help="LLaDA base temperature")
@@ -873,8 +813,6 @@ def main():
                 decode_block_size=args.decode_block_size,
                 candidate_region_size=args.candidate_region_size,
                 argmax_logprob_top_frac=args.argmax_logprob_top_frac,
-                rollout_batch_size=args.rollout_batch_size,
-                encoder_batch_size=args.encoder_batch_size,
             )
 
             generation_seconds = time.perf_counter() - generation_started
@@ -910,8 +848,6 @@ def main():
                     "rollouts_per_cand": args.rollouts_per_cand,
                     "rollout_schedule": args.rollout_schedule,
                     "rollout_n_iter": args.rollout_n_iter,
-                    "rollout_batch_size": args.rollout_batch_size,
-                    "encoder_batch_size": args.encoder_batch_size,
                     "temperature": args.temperature,
                     "perturb_temperature": args.perturb_temperature,
                     "rollout_temperature": args.rollout_temperature,

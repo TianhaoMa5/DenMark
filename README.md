@@ -64,17 +64,11 @@ python -m denmark generate \
   --gen_length 300 --block_size 25 --cand_block_size 1 \
   --num_candidates 16 --num_message_bits 2 --channels_per_step 2 \
   --rollouts_per_cand 3 --rollout_schedule linear_decay \
-  --rollout_batch_size 0 --encoder_batch_size 0 \
   --temperature 0.5 --perturb_temperature 0.6 --rollout_temperature 0.5 \
   --position_selection random --per_cand_positions \
   --dedup_candidates --shared_rollout_seeds \
   --direction_seed 42 --message_seed 0 --generator_family llada
 ```
-
-The execution-only batch settings above start with the complete candidate-rollout
-batch and automatically halve it after a CUDA out-of-memory error. They do not
-change candidate construction, rollout counts, shared random seeds, scoring, or
-selection.
 
 LLaDA-8B and LLaDA1.5 use `llada`; LLaDA2.0-mini uses `llada2`.
 For Dream options: `python -m denmark generate --generator_family dream --help`.

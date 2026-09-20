@@ -215,13 +215,7 @@ def get_model_logits(
 
 @torch.no_grad()
 def encode_texts(
-    texts,
-    enc,
-    enc_tok,
-    device,
-    batch_sz: int = 32,
-    to_cpu: bool = True,
-    batch_stats: dict | None = None,
+    texts, enc, enc_tok, device, batch_sz: int = 32, to_cpu: bool = True
 ) -> torch.Tensor:
     """Mean-pool over attention mask, then L2 normalize.
 
@@ -231,42 +225,16 @@ def encode_texts(
     batch_cap = os.getenv("BLOCK_WM_ENCODE_BATCH_SIZE")
     if batch_cap:
         batch_sz = max(1, min(batch_sz, int(batch_cap)))
-    batch_sz = max(1, min(int(batch_sz), len(texts)))
     all_embs = []
-    initial_batch_size = batch_sz
-    successful_batch_sizes = []
-    oom_retries = 0
-    i = 0
-    while i < len(texts):
-        current_size = min(batch_sz, len(texts) - i)
-        batch = texts[i:i + current_size]
-        inp = out = attn = pooled = embs = None
-        try:
-            inp = enc_tok(batch, padding=True, truncation=True,
-                          max_length=512, return_tensors="pt").to(device)
-            out = enc(**inp)
-            attn = inp["attention_mask"].unsqueeze(-1).float()
-            pooled = (out.last_hidden_state * attn).sum(1) / attn.sum(1).clamp(min=1e-9)
-            embs = F.normalize(pooled, dim=-1)
-        except torch.cuda.OutOfMemoryError:
-            del batch, inp, out, attn, pooled, embs
-            if current_size <= 1:
-                raise
-            oom_retries += 1
-            batch_sz = max(1, current_size // 2)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            continue
+    for i in range(0, len(texts), batch_sz):
+        batch = texts[i:i + batch_sz]
+        inp = enc_tok(batch, padding=True, truncation=True,
+                      max_length=512, return_tensors="pt").to(device)
+        out = enc(**inp)
+        attn = inp["attention_mask"].unsqueeze(-1).float()
+        pooled = (out.last_hidden_state * attn).sum(1) / attn.sum(1).clamp(min=1e-9)
+        embs = F.normalize(pooled, dim=-1)
         all_embs.append(embs.cpu() if to_cpu else embs)
-        successful_batch_sizes.append(current_size)
-        i += current_size
-    if batch_stats is not None:
-        batch_stats.update({
-            "initial_batch_size": int(initial_batch_size),
-            "max_successful_batch_size": int(max(successful_batch_sizes)),
-            "forward_batches": int(len(successful_batch_sizes)),
-            "oom_retries": int(oom_retries),
-        })
     return torch.cat(all_embs, dim=0)
 
 
@@ -311,7 +279,6 @@ def complete_block_one_shot(
     batch_sz: int = 8, n_iter: int = 1,
     shared_noise_group_size: int = 0, shared_noise_seed: int = 0,
     generator_family: str = "llada",
-    batch_stats: dict | None = None,
 ) -> torch.Tensor:
     """
     For each candidate, fill remaining MASK positions IN target_block ONLY.
@@ -328,96 +295,65 @@ def complete_block_one_shot(
     b_e = min(b_s + block_size, L_p + gen_length)
 
     K = cand_batch.shape[0]
-    batch_sz = max(1, min(int(batch_sz), K))
-    initial_batch_size = batch_sz
-    successful_batch_sizes = []
-    oom_retries = 0
     out_chunks = []
-    s = 0
-    while s < K:
-        current_size = min(batch_sz, K - s)
-        cpu_rng_state = torch.random.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state(cand_batch.device) if cand_batch.is_cuda else None
-        chunk = block_logits = sampling_logits = sampled = new_block = None
-        try:
-            chunk = cand_batch[s: s + current_size].clone()
-            for step in range(n_iter):
-                block_logits = get_model_logits(
-                    model,
-                    chunk,
-                    generator_family,
-                    logit_start=b_s,
-                    logit_end=b_e,
-                )
-                if temperature == 0:
-                    sampled = block_logits.argmax(dim=-1)
-                else:
-                    sampling_logits = block_logits.to(torch.float64)
-                    if shared_noise_group_size and shared_noise_group_size > 0:
-                        noise = torch.empty_like(sampling_logits)
-                        rollout_ids = (
-                            torch.arange(s, s + chunk.shape[0], device=sampling_logits.device)
-                            % int(shared_noise_group_size)
+    for s in range(0, K, batch_sz):
+        chunk = cand_batch[s: s + batch_sz].clone()
+        for step in range(n_iter):
+            block_logits = get_model_logits(
+                model,
+                chunk,
+                generator_family,
+                logit_start=b_s,
+                logit_end=b_e,
+            )
+            if temperature == 0:
+                sampled = block_logits.argmax(dim=-1)
+            else:
+                sampling_logits = block_logits.to(torch.float64)
+                if shared_noise_group_size and shared_noise_group_size > 0:
+                    noise = torch.empty_like(sampling_logits)
+                    rollout_ids = (
+                        torch.arange(s, s + chunk.shape[0], device=sampling_logits.device)
+                        % int(shared_noise_group_size)
+                    )
+                    for rollout_i in rollout_ids.unique(sorted=True).tolist():
+                        gen = torch.Generator(device=sampling_logits.device)
+                        seed = (
+                            int(shared_noise_seed) * 1_000_003
+                            + int(step) * 10_007
+                            + int(rollout_i)
+                        ) & 0x7FFFFFFF
+                        gen.manual_seed(seed)
+                        shared_noise = torch.rand(
+                            sampling_logits.shape[1:],
+                            generator=gen,
+                            device=sampling_logits.device,
+                            dtype=torch.float64,
                         )
-                        for rollout_i in rollout_ids.unique(sorted=True).tolist():
-                            gen = torch.Generator(device=sampling_logits.device)
-                            seed = (
-                                int(shared_noise_seed) * 1_000_003
-                                + int(step) * 10_007
-                                + int(rollout_i)
-                            ) & 0x7FFFFFFF
-                            gen.manual_seed(seed)
-                            shared_noise = torch.rand(
-                                sampling_logits.shape[1:],
-                                generator=gen,
-                                device=sampling_logits.device,
-                                dtype=torch.float64,
-                            )
-                            noise[rollout_ids == int(rollout_i)] = shared_noise
-                    else:
-                        noise = torch.rand_like(sampling_logits, dtype=torch.float64)
-                    sampled = (sampling_logits
-                               - torch.log(-torch.log(noise + 1e-20) + 1e-20) * temperature
-                               ).argmax(dim=-1)
-                chunk_block = chunk[:, b_s:b_e]
-                is_mask = (chunk_block == mask_id)
-                if step == n_iter - 1:
-                    new_block = torch.where(is_mask, sampled, chunk_block)
+                        noise[rollout_ids == int(rollout_i)] = shared_noise
                 else:
-                    conf = block_logits.softmax(dim=-1).max(dim=-1).values
-                    conf_masked = conf.masked_fill(~is_mask, float('-inf'))
-                    n_mask = is_mask.sum(dim=-1)
-                    steps_left = n_iter - step
-                    n_commit = (n_mask.float() / steps_left).ceil().long()
-                    new_block = chunk_block.clone()
-                    for b in range(chunk.shape[0]):
-                        nk = min(int(n_commit[b].item()), int(is_mask[b].sum().item()))
-                        if nk > 0:
-                            top_idx = conf_masked[b].topk(nk).indices
-                            new_block[b, top_idx] = sampled[b, top_idx]
-                chunk[:, b_s:b_e] = new_block
-        except torch.cuda.OutOfMemoryError:
-            del chunk, block_logits, sampling_logits, sampled, new_block
-            torch.random.set_rng_state(cpu_rng_state)
-            if cuda_rng_state is not None:
-                torch.cuda.set_rng_state(cuda_rng_state, cand_batch.device)
-            if current_size <= 1:
-                raise
-            oom_retries += 1
-            batch_sz = max(1, current_size // 2)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            continue
+                    noise = torch.rand_like(sampling_logits, dtype=torch.float64)
+                sampled = (sampling_logits
+                           - torch.log(-torch.log(noise + 1e-20) + 1e-20) * temperature
+                           ).argmax(dim=-1)
+            chunk_block = chunk[:, b_s:b_e]
+            is_mask = (chunk_block == mask_id)
+            if step == n_iter - 1:
+                new_block = torch.where(is_mask, sampled, chunk_block)
+            else:
+                conf = block_logits.softmax(dim=-1).max(dim=-1).values
+                conf_masked = conf.masked_fill(~is_mask, float('-inf'))
+                n_mask = is_mask.sum(dim=-1)
+                steps_left = n_iter - step
+                n_commit = (n_mask.float() / steps_left).ceil().long()
+                new_block = chunk_block.clone()
+                for b in range(chunk.shape[0]):
+                    nk = min(int(n_commit[b].item()), int(is_mask[b].sum().item()))
+                    if nk > 0:
+                        top_idx = conf_masked[b].topk(nk).indices
+                        new_block[b, top_idx] = sampled[b, top_idx]
+            chunk[:, b_s:b_e] = new_block
         out_chunks.append(chunk.cpu())
-        successful_batch_sizes.append(current_size)
-        s += current_size
-    if batch_stats is not None:
-        batch_stats.update({
-            "initial_batch_size": int(initial_batch_size),
-            "max_successful_batch_size": int(max(successful_batch_sizes)),
-            "forward_batches": int(len(successful_batch_sizes) * n_iter),
-            "oom_retries": int(oom_retries),
-        })
     return torch.cat(out_chunks, dim=0)
 
 
@@ -593,17 +529,13 @@ def sample_from_logits(
     *,
     shared_noise_group_size: int = 0,
     shared_noise_seed: int = 0,
-    row_offset: int = 0,
 ) -> torch.Tensor:
     if temperature == 0:
         return logits.float().argmax(dim=-1)
     logits = logits.float()
     if shared_noise_group_size and shared_noise_group_size > 0:
         noise = torch.empty_like(logits)
-        rollout_ids = (
-            torch.arange(row_offset, row_offset + logits.shape[0], device=logits.device)
-            % int(shared_noise_group_size)
-        )
+        rollout_ids = torch.arange(logits.shape[0], device=logits.device) % int(shared_noise_group_size)
         for rollout_i in rollout_ids.unique(sorted=True).tolist():
             gen = torch.Generator(device=logits.device)
             seed = (int(shared_noise_seed) * 1_000_003 + int(rollout_i)) & 0x7FFFFFFF
@@ -787,7 +719,6 @@ class NativeSemanticWatermarkHook:
         dedup_candidates: bool = False,
         rollout_logits_mode: str = "full",
         rollout_batch_size: int = 0,
-        encoder_batch_size: int = 0,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -816,7 +747,6 @@ class NativeSemanticWatermarkHook:
         self.dedup_candidates = bool(dedup_candidates)
         self.rollout_logits_mode = str(rollout_logits_mode)
         self.rollout_batch_size = max(0, int(rollout_batch_size))
-        self.encoder_batch_size = max(0, int(encoder_batch_size))
         if self.argmax_logprob_top_frac <= 0.0 or self.argmax_logprob_top_frac > 1.0:
             raise ValueError("argmax_logprob_top_frac must be in (0, 1]")
         if self.rollout_schedule not in {"none", "constant", "linear_decay"}:
@@ -899,93 +829,50 @@ class NativeSemanticWatermarkHook:
             rollout_block = rollout_cands[:, b_s:b_e]
             rollout_unresolved = rollout_block == self.mask_id
             rollout_noise_seed = (int(step) * 1_000_003 + int(block_id) * 1009) & 0x7FFFFFFF
-            rollout_batch_size = min(
-                self.rollout_batch_size or int(rollout_cands.shape[0]),
-                int(rollout_cands.shape[0]),
-            )
+            rollout_batch_size = self.rollout_batch_size or int(rollout_cands.shape[0])
             if effective_rollouts > 1:
                 rollout_batch_size = max(
                     effective_rollouts,
                     (rollout_batch_size // effective_rollouts) * effective_rollouts,
                 )
-            initial_rollout_batch_size = int(rollout_batch_size)
             sampled_parts = []
-            rollout_forward_batches = 0
-            rollout_oom_retries = 0
-            successful_rollout_batch_sizes = []
-            rollout_start = 0
-            while rollout_start < int(rollout_cands.shape[0]):
+            for rollout_start in range(0, int(rollout_cands.shape[0]), rollout_batch_size):
                 rollout_end = min(rollout_start + rollout_batch_size, int(rollout_cands.shape[0]))
                 rollout_cands_part = rollout_cands[rollout_start:rollout_end]
-                cpu_rng_state = torch.random.get_rng_state()
-                cuda_rng_state = (
-                    torch.cuda.get_rng_state(rollout_cands.device)
-                    if rollout_cands.is_cuda
-                    else None
-                )
-                rollout_logits = sampled_part = None
-                try:
-                    if self.rollout_logits_mode == "window":
-                        rollout_logits = dream_logits(
-                            self.model,
-                            rollout_cands_part,
-                            logit_start=b_s,
-                            logit_end=b_e,
-                        )
-                    else:
-                        rollout_logits = dream_logits(self.model, rollout_cands_part)[:, b_s:b_e]
-                    sampled_part = sample_from_logits(
+                if self.rollout_logits_mode == "window":
+                    rollout_logits = dream_logits(
+                        self.model,
+                        rollout_cands_part,
+                        logit_start=b_s,
+                        logit_end=b_e,
+                    )
+                else:
+                    rollout_logits = dream_logits(self.model, rollout_cands_part)[:, b_s:b_e]
+                sampled_parts.append(
+                    sample_from_logits(
                         rollout_logits,
                         self.rollout_temperature,
                         shared_noise_group_size=effective_rollouts if self.shared_rollout_seeds else 0,
                         shared_noise_seed=rollout_noise_seed,
-                        row_offset=rollout_start,
                     )
-                except torch.cuda.OutOfMemoryError:
-                    del rollout_cands_part, rollout_logits, sampled_part
-                    torch.random.set_rng_state(cpu_rng_state)
-                    if cuda_rng_state is not None:
-                        torch.cuda.set_rng_state(cuda_rng_state, rollout_cands.device)
-                    current_size = rollout_end - rollout_start
-                    if current_size <= 1:
-                        raise
-                    rollout_oom_retries += 1
-                    rollout_batch_size = max(1, current_size // 2)
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    continue
-                sampled_parts.append(sampled_part)
-                rollout_forward_batches += 1
-                successful_rollout_batch_sizes.append(rollout_end - rollout_start)
-                rollout_start = rollout_end
+                )
                 del rollout_logits
             sampled = torch.cat(sampled_parts, dim=0)
             block = torch.where(rollout_unresolved, sampled, rollout_block)
         else:
             effective_rollouts = 1
-            initial_rollout_batch_size = int(block.shape[0])
-            rollout_batch_size = int(block.shape[0])
-            rollout_forward_batches = 0
-            rollout_oom_retries = 0
-            successful_rollout_batch_sizes = [int(block.shape[0])]
 
         texts = [
             safe_decode_dream(self.tokenizer, block[i].detach().cpu().tolist(), self.special_ids)
             or "[empty]"
             for i in range(block.shape[0])
         ]
-        encoder_batch_size = min(
-            len(texts),
-            self.encoder_batch_size if self.encoder_batch_size > 0 else len(texts),
-        )
-        encoder_batch_stats = {}
         embs_all = encode_texts(
             texts,
             self.encoder,
             self.encoder_tokenizer,
             self.device,
-            batch_sz=encoder_batch_size,
-            batch_stats=encoder_batch_stats,
+            batch_sz=min(32, block.shape[0]),
         )
         raw_rollout_scores = None
         if effective_rollouts > 1:
@@ -1080,15 +967,7 @@ class NativeSemanticWatermarkHook:
             "rollouts_per_cand_computed": int(effective_rollouts),
             "rollouts_per_cand_target_avg": int(self.rollouts_per_cand),
             "rollout_schedule": self.rollout_schedule,
-            "rollout_batch_size_configured": int(self.rollout_batch_size),
-            "rollout_batch_size_initial": int(initial_rollout_batch_size),
-            "rollout_batch_size": int(max(successful_rollout_batch_sizes)),
-            "rollout_forward_batches": int(rollout_forward_batches),
-            "rollout_oom_retries": int(rollout_oom_retries),
-            "encoder_batch_size_configured": int(self.encoder_batch_size),
-            "encoder_batch_size": int(encoder_batch_stats["max_successful_batch_size"]),
-            "encoder_forward_batches": int(encoder_batch_stats["forward_batches"]),
-            "encoder_oom_retries": int(encoder_batch_stats["oom_retries"]),
+            "rollout_batch_size": int(block.shape[0]),
             "shared_rollout_seeds": self.shared_rollout_seeds,
             "dedup_candidates": self.dedup_candidates,
             "rollout_logits_mode": self.rollout_logits_mode,
@@ -1353,19 +1232,7 @@ def generate_dream() -> None:
         "--rollout_batch_size",
         type=int,
         default=0,
-        help=(
-            "Maximum rollout rows per generator/scoring microbatch; 0 starts with the full "
-            "batch. CUDA OOM automatically halves the batch and retries."
-        ),
-    )
-    p.add_argument(
-        "--encoder_batch_size",
-        type=int,
-        default=0,
-        help=(
-            "Maximum rollout texts per semantic-encoder forward; 0 starts with the full "
-            "batch. CUDA OOM automatically halves the batch and retries."
-        ),
+        help="Maximum rollout rows per generator/scoring microbatch; 0 keeps the full batch.",
     )
     p.add_argument("--logprob_weight", type=float, default=0.0)
     p.add_argument("--argmax_logprob_top_frac", type=float, default=1.0,
@@ -1550,7 +1417,6 @@ def generate_dream() -> None:
                     dedup_candidates=args.dedup_candidates,
                     rollout_logits_mode=args.rollout_logits_mode,
                     rollout_batch_size=args.rollout_batch_size,
-                    encoder_batch_size=args.encoder_batch_size,
                 )
                 decode_controller = DreamSemanticUnitDecodeController(
                     prompt_len=input_ids.shape[1],
@@ -1649,7 +1515,6 @@ def generate_dream() -> None:
                             "dedup_candidates": args.dedup_candidates,
                             "rollout_logits_mode": args.rollout_logits_mode,
                             "rollout_batch_size": args.rollout_batch_size,
-                            "encoder_batch_size": args.encoder_batch_size,
                             "candidate_position_mode": args.candidate_position_mode,
                             "decode_position_mode": args.decode_position_mode,
                             "block_size": args.block_size,
@@ -1677,3 +1542,5 @@ def generate_dream() -> None:
             out_f.flush()
 
     print(f"Saved {args.output}", flush=True)
+
+

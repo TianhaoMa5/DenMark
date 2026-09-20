@@ -10,8 +10,6 @@
     "num_channels": 2,
     "average_rollouts_per_candidate": 3,
     "rollout_schedule": "linear_decay",
-    "rollout_batch_size": 0,
-    "encoder_batch_size": 0,
     "base_temperature": 0.5,
     "candidate_temperature": 0.6,
     "rollout_temperature": 0.5,
