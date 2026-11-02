@@ -1,4 +1,4 @@
-<h1 align="center">🇩🇰 DenMark: Robust Semantic-Level Watermarking for Diffusion Large Language Models</h1>
+<h1 align="center">DenMark: Robust Semantic-Level Watermarking for Diffusion Large Language Models</h1>
 
 <p align="center">
   Tianhao Ma, Weihao Xuan, Dong-Dong Wu, Farshid Nooshi,<br>
