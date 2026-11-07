@@ -75,6 +75,7 @@ def select_pmark_candidate(
     valid_mask: list[bool],
     *,
     median_method: str = "prior",
+    rng: random.Random | None = None,
 ) -> tuple[int, list[float], list[int]]:
     """Apply PMark's online multi-channel filtering and select one survivor."""
     if projections.ndim != 2 or target_bits.ndim != 1:
@@ -86,6 +87,7 @@ def select_pmark_candidate(
     if median_method not in {"prior", "torch"}:
         raise ValueError("median_method must be 'prior' or 'torch'")
 
+    choose = random.choice if rng is None else rng.choice
     alive = [index for index, valid in enumerate(valid_mask) if valid]
     if not alive:
         return 0, [], []
@@ -111,8 +113,8 @@ def select_pmark_candidate(
 
     if not alive:
         valid_indices = [index for index, valid in enumerate(valid_mask) if valid]
-        return random.choice(valid_indices), medians, []
-    return random.choice(alive), medians, alive
+        return choose(valid_indices), medians, []
+    return choose(alive), medians, alive
 
 
 def pmark_soft_matches(
