@@ -81,6 +81,8 @@ The [experiment configuration](configs/paper_experiments.json) lists the setting
 
 - **Baselines:** Clean, DLM-KGW, DGMark, PatternMark, UMR; Block Best-of-K,
   PMark-style and SemStamp-style for the blockwise comparison.
+- Fixed-block adaptations of SWAN, PMark, AliMark, SAMark, CAD-Mark, and SemField
+  share the Block Best-of-K decoder. [Generation and detection guide](docs/BLOCK_SEMANTIC_BASELINES.md)
 - **Attacks:** sentence/document GPT attacks, nonuniform length changes,
   Parrot, DIPPER, back-translation, and token-level perturbations.
 - **Experiments:** detection, PPL and GPT judge, ablations, rollout diagnostics,

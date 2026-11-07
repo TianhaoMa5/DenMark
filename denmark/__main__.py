@@ -40,6 +40,7 @@ COMMANDS = {
         "semstamp": {
             "generate": "denmark.baselines.semstamp.generate",
         },
+        "block-semantic": "denmark.baselines.block_semantic.cli",
         "semantic-detect": "denmark.baselines.semantic_detect",
     },
     "attack": {
